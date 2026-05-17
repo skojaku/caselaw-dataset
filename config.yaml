@@ -1,0 +1,2 @@
+raw_dir: "/path/to/raw/caselaw"   # Directory containing Legal_Citation_Dict.json, Citation_Info_Dict.json, court_hierarchy.json
+output_dir: "/path/to/output/preprocessed"  # Where to write final outputs

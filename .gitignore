@@ -1,0 +1,9 @@
+.snakemake/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+*.npz
+*.csv
+*.parquet
