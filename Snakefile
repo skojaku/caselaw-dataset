@@ -44,7 +44,6 @@ OPINIONS_CSV = j(RAW_DIR, f"opinions-{DATE}.csv")
 CLUSTERS_CSV = j(RAW_DIR, f"opinion-clusters-{DATE}.csv")
 DOCKETS_CSV = j(RAW_DIR, f"dockets-{DATE}.csv")
 COURTS_CSV = j(RAW_DIR, f"courts-{DATE}.csv")
-COURT_APPEALS_TO_CSV = j(RAW_DIR, f"court-appeals-to-{DATE}.csv")
 
 # =============================================================================
 # Converted JSON files (input to the build pipeline)
@@ -99,7 +98,6 @@ rule download:
         CLUSTERS_CSV,
         DOCKETS_CSV,
         COURTS_CSV,
-        COURT_APPEALS_TO_CSV,
 
 
 def s3_download(wildcards):
@@ -129,7 +127,6 @@ rule convert_to_json:
         clusters_file = CLUSTERS_CSV,
         dockets_file = DOCKETS_CSV,
         courts_file = COURTS_CSV,
-        court_appeals_to_file = COURT_APPEALS_TO_CSV,
     output:
         citation_dict = CITATION_DICT_JSON,
         info_dict = INFO_DICT_JSON,

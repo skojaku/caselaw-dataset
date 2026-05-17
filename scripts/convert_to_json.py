@@ -25,7 +25,6 @@ if "snakemake" in sys.modules:
     clusters_file = snakemake.input["clusters_file"]
     dockets_file = snakemake.input["dockets_file"]
     courts_file = snakemake.input["courts_file"]
-    court_appeals_to_file = snakemake.input["court_appeals_to_file"]
     out_citation_dict = snakemake.output["citation_dict"]
     out_info_dict = snakemake.output["info_dict"]
     out_court_hierarchy = snakemake.output["court_hierarchy"]
@@ -36,7 +35,6 @@ else:
     clusters_file = f"{RAW}/opinion_clusters.csv"
     dockets_file = f"{RAW}/dockets.csv"
     courts_file = f"{RAW}/courts.csv"
-    court_appeals_to_file = f"{RAW}/court_appeals_to.csv"
     out_citation_dict = "Legal_Citation_Dict.json"
     out_info_dict = "Citation_Info_Dict.json"
     out_court_hierarchy = "court_hierarchy.json"
@@ -109,41 +107,80 @@ print(f"  {len(info_dict):,} opinions written")
 # 3. court_hierarchy.json
 #    [[supreme_name], [circuit_name, dist1_name, dist2_name, ...], ...]
 #
-#    - SCOTUS (jurisdiction='F', id='scotus') is the top level
-#    - Circuit courts (jurisdiction='F', id starts with 'ca') are second level
-#    - District courts (jurisdiction='FD') are grouped under their circuit
-#      using the court_appeals_to table (from_court_id -> to_court_id)
+#    - SCOTUS is the top level
+#    - Circuit courts of appeals are second level
+#    - District courts are grouped under their circuit using the canonical
+#      federal court system mapping (court_appeals_to only covers special courts)
 # =============================================================================
 print("Building court hierarchy...")
 
-courts_df = courts.copy()
-courts_in_use = courts_df[courts_df["in_use"] == "t"]
+courts_in_use = courts[courts["in_use"] == "t"]
 
-# Build district -> circuit mapping from court_appeals_to
-appeals_to = pd.read_csv(court_appeals_to_file, dtype=str).fillna("")
-district_to_circuit = dict(
-    zip(appeals_to["from_court_id"], appeals_to["to_court_id"])
-)
+# Canonical district-court-id → circuit-court-id mapping.
+# Source: https://www.uscourts.gov/about-federal-courts/court-role-and-structure
+DISTRICT_TO_CIRCUIT = {
+    # First Circuit
+    "med": "ca1", "nhd": "ca1", "mad": "ca1", "rid": "ca1", "prd": "ca1",
+    # Second Circuit
+    "ctd": "ca2", "nyed": "ca2", "nynd": "ca2", "nysd": "ca2", "nywd": "ca2", "vtd": "ca2",
+    # Third Circuit
+    "njd": "ca3", "paed": "ca3", "pamd": "ca3", "pawd": "ca3", "ded": "ca3", "vid": "ca3",
+    "pennsylvaniad": "ca3",
+    # Fourth Circuit
+    "mdd": "ca4", "vaed": "ca4", "vawd": "ca4", "wvnd": "ca4", "wvsd": "ca4",
+    "nced": "ca4", "ncmd": "ca4", "ncwd": "ca4", "scd": "ca4",
+    "southcarolinaed": "ca4", "southcarolinawd": "ca4",
+    # Fifth Circuit
+    "txed": "ca5", "txnd": "ca5", "txsd": "ca5", "txwd": "ca5",
+    "laed": "ca5", "lamd": "ca5", "lawd": "ca5", "orld": "ca5",
+    "msnd": "ca5", "mssd": "ca5",
+    # Sixth Circuit
+    "kyed": "ca6", "kywd": "ca6", "mied": "ca6", "miwd": "ca6",
+    "ohnd": "ca6", "ohsd": "ca6", "ohiod": "ca6",
+    "tned": "ca6", "tnmd": "ca6", "tnwd": "ca6", "tennessed": "ca6",
+    # Seventh Circuit
+    "ilnd": "ca7", "ilsd": "ca7", "ilcd": "ca7", "illinoisd": "ca7", "illinoised": "ca7",
+    "innd": "ca7", "insd": "ca7", "indianad": "ca7",
+    "wied": "ca7", "wiwd": "ca7",
+    # Eighth Circuit
+    "ared": "ca8", "arwd": "ca8",
+    "iand": "ca8", "iasd": "ca8",
+    "mnd": "ca8",
+    "moed": "ca8", "mowd": "ca8",
+    "ned": "ca8", "ndd": "ca8", "sdd": "ca8",
+    # Ninth Circuit
+    "akd": "ca9", "azd": "ca9",
+    "cand": "ca9", "caed": "ca9", "cacd": "ca9", "casd": "ca9", "californiad": "ca9",
+    "hid": "ca9", "idd": "ca9", "mtd": "ca9", "nvd": "ca9", "ord": "ca9",
+    "waed": "ca9", "wawd": "ca9",
+    "gud": "ca9", "nmid": "ca9", "canalzoned": "ca9",
+    # Tenth Circuit
+    "cod": "ca10", "ksd": "ca10", "nmd": "ca10",
+    "oked": "ca10", "oknd": "ca10", "okwd": "ca10",
+    "utd": "ca10", "wyd": "ca10",
+    # Eleventh Circuit
+    "alnd": "ca11", "almd": "ca11", "alsd": "ca11",
+    "flmd": "ca11", "flnd": "ca11", "flsd": "ca11",
+    "gand": "ca11", "gamd": "ca11", "gasd": "ca11",
+    # D.C. Circuit
+    "dcd": "cadc",
+    # Federal Circuit (specialized)
+    "uscfc": "cafc",
+}
 
-# Identify court tiers by jurisdiction code
-# F = federal (SCOTUS + circuit courts of appeals)
-# FD = federal district courts
 scotus_id = "scotus"
 circuit_ids = [
     r["id"]
     for _, r in courts_in_use.iterrows()
-    if r["jurisdiction"] == "F" and r["id"] != scotus_id and r["id"] != "usjc"
-]
-district_ids = [
-    r["id"] for _, r in courts_in_use.iterrows() if r["jurisdiction"] == "FD"
+    if r["jurisdiction"] == "F" and r["id"] not in (scotus_id, "usjc")
 ]
 
 # Group districts under their circuit
 circuit_to_districts = defaultdict(list)
-for d_id in district_ids:
-    circuit_id = district_to_circuit.get(d_id)
-    if circuit_id and circuit_id in set(circuit_ids):
-        circuit_to_districts[circuit_id].append(court_id_to_name.get(d_id, d_id))
+for d_id, c_id in DISTRICT_TO_CIRCUIT.items():
+    name = court_id_to_name.get(d_id)
+    if name and c_id in set(circuit_ids):
+        circuit_to_districts[c_id].append(name)
 
 # Build the hierarchy list
 scotus_name = court_id_to_name.get(scotus_id, "Supreme Court of the United States")

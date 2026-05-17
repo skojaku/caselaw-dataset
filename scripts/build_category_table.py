@@ -39,7 +39,7 @@ venue2venueType = dict(zip(venue_table.venue, venue_table.venueType))
 #
 category_table = []
 sub_category_table = []
-type2id = {"Supreme": 0, "Appeals": 1, "District": 2}
+type2id = {"Supreme": 0, "Appeals": 1, "District": 2, "None": -1}
 for i, group in enumerate(hierarchy):
     venueType = [venue2venueType[g] if g in venue2venueType else "None" for g in group]
     class_ids = [type2id[g] for g in venueType]
