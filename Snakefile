@@ -1,21 +1,18 @@
 """
 Caselaw Dataset Pipeline
 
-Preprocesses raw caselaw data (CourtListener / Harvard Caselaw Access Project)
-into structured tables (cases, judges, citations, court categories).
+Downloads CourtListener bulk CSV data from S3 and preprocesses it into
+structured tables (cases, judges, citations, court categories).
 
 Two output directories:
   - preprocessed_unfiltered/: all cases
   - preprocessed/: filtered to largest weakly connected component only
 
-Raw input files (set raw_dir in config.yaml):
-  - Legal_Citation_Dict.json   — citation links  {cited_id: [citing_id, ...]}
-  - Citation_Info_Dict.json    — case metadata
-  - court_hierarchy.json       — court hierarchy tree
-
 Usage:
     snakemake --cores all     # Run full pipeline
     snakemake -n              # Dry run
+    snakemake download        # Download CSVs only
+    snakemake convert_to_json # Convert CSVs to JSON only
 """
 
 from os.path import join as j
@@ -26,17 +23,36 @@ configfile: "config.yaml"
 # Directories
 # =============================================================================
 
-RAW_DIR = config["raw_dir"]
+RAW_DIR = config["raw_dir"]         # CourtListener bulk CSVs go here
+JSON_DIR = config.get("json_dir", j(RAW_DIR, "json"))  # converted JSON files
 OUTPUT_DIR = config["output_dir"]
 UNFILTERED_DIR = OUTPUT_DIR + "_unfiltered"
 
 # =============================================================================
-# Raw inputs
+# Bulk data snapshot date (set in config.yaml)
 # =============================================================================
 
-CITATION_FILE = j(RAW_DIR, "Legal_Citation_Dict.json")
-CITATION_INFO_FILE = j(RAW_DIR, "Citation_Info_Dict.json")
-COURT_HIERARCHY_FILE = j(RAW_DIR, "court_hierarchy.json")
+DATE = config.get("bulk_data_date", "2026-03-31")
+S3_BASE = "s3://com-courtlistener-storage/bulk-data"
+
+# =============================================================================
+# Raw CSV inputs (downloaded from S3)
+# =============================================================================
+
+CITATION_MAP_CSV = j(RAW_DIR, f"citation-map-{DATE}.csv")
+OPINIONS_CSV = j(RAW_DIR, f"opinions-{DATE}.csv")
+CLUSTERS_CSV = j(RAW_DIR, f"opinion-clusters-{DATE}.csv")
+DOCKETS_CSV = j(RAW_DIR, f"dockets-{DATE}.csv")
+COURTS_CSV = j(RAW_DIR, f"courts-{DATE}.csv")
+COURT_APPEALS_TO_CSV = j(RAW_DIR, f"court-appeals-to-{DATE}.csv")
+
+# =============================================================================
+# Converted JSON files (input to the build pipeline)
+# =============================================================================
+
+CITATION_DICT_JSON = j(JSON_DIR, "Legal_Citation_Dict.json")
+INFO_DICT_JSON = j(JSON_DIR, "Citation_Info_Dict.json")
+COURT_HIERARCHY_JSON = j(JSON_DIR, "court_hierarchy.json")
 
 # =============================================================================
 # Unfiltered outputs
@@ -71,11 +87,66 @@ rule all:
         PAPER_CATEGORY_TABLE,
 
 
+# -----------------------------------------------------------------------------
+# Download
+# -----------------------------------------------------------------------------
+
+rule download:
+    """Download all required CourtListener bulk CSVs from S3."""
+    input:
+        CITATION_MAP_CSV,
+        OPINIONS_CSV,
+        CLUSTERS_CSV,
+        DOCKETS_CSV,
+        COURTS_CSV,
+        COURT_APPEALS_TO_CSV,
+
+
+def s3_download(wildcards):
+    """Return the S3 path for a given local CSV filename."""
+    filename = wildcards.filename
+    return f"{S3_BASE}/{filename}.bz2"
+
+
+rule download_csv:
+    output:
+        j(RAW_DIR, "{filename}.csv"),
+    params:
+        s3_path = lambda wc: f"{S3_BASE}/{wc.filename}.bz2",
+    shell:
+        "aws s3 cp '{params.s3_path}' - --no-sign-request | bzcat > '{output}'"
+
+
+# -----------------------------------------------------------------------------
+# Convert CSVs → JSON
+# -----------------------------------------------------------------------------
+
+rule convert_to_json:
+    """Convert CourtListener CSV bulk data to the three JSON files."""
+    input:
+        citation_map_file = CITATION_MAP_CSV,
+        opinions_file = OPINIONS_CSV,
+        clusters_file = CLUSTERS_CSV,
+        dockets_file = DOCKETS_CSV,
+        courts_file = COURTS_CSV,
+        court_appeals_to_file = COURT_APPEALS_TO_CSV,
+    output:
+        citation_dict = CITATION_DICT_JSON,
+        info_dict = INFO_DICT_JSON,
+        court_hierarchy = COURT_HIERARCHY_JSON,
+    script:
+        "scripts/convert_to_json.py"
+
+
+# -----------------------------------------------------------------------------
+# Build (from JSON)
+# -----------------------------------------------------------------------------
+
 rule build_citation_net:
     input:
-        node_data_file = CITATION_INFO_FILE,
-        link_data_file = CITATION_FILE,
-        court_data_file = COURT_HIERARCHY_FILE,
+        node_data_file = INFO_DICT_JSON,
+        link_data_file = CITATION_DICT_JSON,
+        court_data_file = COURT_HIERARCHY_JSON,
     output:
         net_file = UF_CITATION_NET,
         node_table_file = UF_PAPER_TABLE,
@@ -87,7 +158,7 @@ rule build_citation_net:
 rule build_category_table:
     input:
         input_file = UF_PAPER_TABLE,
-        court_hierarchy_file = COURT_HIERARCHY_FILE,
+        court_hierarchy_file = COURT_HIERARCHY_JSON,
     output:
         output_paper_category_table_file = UF_PAPER_CATEGORY_TABLE,
         output_category_table_file = UF_CATEGORY_TABLE,

@@ -1,2 +1,5 @@
-raw_dir: "/path/to/raw/caselaw"   # Directory containing Legal_Citation_Dict.json, Citation_Info_Dict.json, court_hierarchy.json
+raw_dir: "/path/to/raw/caselaw"          # Where to download CourtListener CSVs
+json_dir: "/path/to/raw/caselaw/json"   # Where to write converted JSON files (default: raw_dir/json)
 output_dir: "/path/to/output/preprocessed"  # Where to write final outputs
+
+bulk_data_date: "2026-03-31"  # Snapshot date; see https://com-courtlistener-storage.s3-us-west-2.amazonaws.com/list.html?prefix=bulk-data/
