@@ -92,16 +92,27 @@ for _, row in clusters.iterrows():
 
 print("Loading opinions and building info dict...")
 info_dict = {}
-# opinions has large HTML/text fields with embedded newlines; use pandas with
-# usecols to avoid csv.DictReader misaligning rows on those fields
+# opinions has large HTML/text fields with embedded newlines; use the python
+# engine and on_bad_lines='skip' for robustness, and only read needed columns.
 opinions_df = pd.read_csv(
-    opinions_file, usecols=["id", "cluster_id"], dtype=str
+    opinions_file,
+    usecols=["id", "cluster_id"],
+    dtype=str,
+    engine="python",
+    on_bad_lines="skip",
 ).fillna("")
+n_bad = 0
 for _, row in opinions_df.iterrows():
+    # Guard: skip any rows where the id column was misaligned (non-numeric)
+    if not str(row["id"]).strip().lstrip("-").isdigit():
+        n_bad += 1
+        continue
     cluster_info = cluster_id_to_info.get(row["cluster_id"])
     if cluster_info is not None:
         info_dict[row["id"]] = cluster_info
 
+if n_bad:
+    print(f"  Warning: skipped {n_bad} malformed opinion rows")
 with open(out_info_dict, "w") as f:
     json.dump(info_dict, f)
 print(f"  {len(info_dict):,} opinions written")
