@@ -26,7 +26,7 @@ In the **filtered** output, all IDs are re-mapped to contiguous ranges starting 
 ### 1. Install dependencies
 
 ```bash
-pip install numpy scipy pandas networkx ujson tqdm snakemake
+pip install numpy scipy pandas polars networkx ujson tqdm snakemake
 pip install awscli   # for downloading from S3
 ```
 

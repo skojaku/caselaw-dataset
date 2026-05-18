@@ -2,7 +2,7 @@
 # @Author: Sadamori Kojaku
 # @Date:   2026-05-17
 # @Last Modified by:   Sadamori Kojaku
-# @Last Modified time: 2026-05-17
+# @Last Modified time: 2026-05-18
 """
 Convert CourtListener bulk CSV data to the three JSON files used by the
 caselaw preprocessing pipeline:
@@ -10,14 +10,16 @@ caselaw preprocessing pipeline:
   - Legal_Citation_Dict.json   {cited_opinion_id: [citing_opinion_id, ...]}
   - Citation_Info_Dict.json    {opinion_id: {date, court, case_name, ...}}
   - court_hierarchy.json       [[supreme_name], [circuit_name, dist1, ...], ...]
+
+Uses polars with lazy evaluation + streaming so large files (opinions.csv has
+full HTML text) are never fully loaded into RAM.
 """
 # %%
-import csv
 import json
 import sys
 from collections import defaultdict
 
-import pandas as pd
+import polars as pl
 
 if "snakemake" in sys.modules:
     citation_map_file = snakemake.input["citation_map_file"]
@@ -44,78 +46,80 @@ else:
 #    {cited_opinion_id_str: [citing_opinion_id_int, ...]}
 # =============================================================================
 print("Building citation dict...")
-citation_dict = defaultdict(list)
-with open(citation_map_file, newline="", encoding="utf-8") as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        cited = row["cited_opinion_id"]
-        citing = int(row["citing_opinion_id"])
-        citation_dict[cited].append(citing)
-
+citation = pl.read_csv(
+    citation_map_file,
+    columns=["cited_opinion_id", "citing_opinion_id"],
+    infer_schema_length=0,
+)
+citation_agg = citation.group_by("cited_opinion_id").agg(
+    pl.col("citing_opinion_id").cast(pl.Int64, strict=False).drop_nulls()
+)
+citation_dict = {
+    row["cited_opinion_id"]: row["citing_opinion_id"]
+    for row in citation_agg.to_dicts()
+}
 with open(out_citation_dict, "w") as f:
-    json.dump(dict(citation_dict), f)
+    json.dump(citation_dict, f)
 print(f"  {len(citation_dict):,} cited opinions written")
 
 # =============================================================================
 # 2. Citation_Info_Dict.json
 #    {opinion_id_str: {date, court, case_name, case_name_full}}
 #
-#    Join chain:
-#      opinions.id  →(cluster_id)→  opinion_clusters.id
-#      opinion_clusters  →(docket_id)→  dockets.id
-#      dockets.court_id  →(id)→  courts.full_name
+#    Join chain (all lazy + streamed):
+#      opinions  →(cluster_id)→  opinion_clusters  →(docket_id)→  dockets  →(court_id)→  courts
 # =============================================================================
 print("Loading courts...")
-courts = pd.read_csv(courts_file, dtype=str).fillna("")
-court_id_to_name = dict(zip(courts["id"], courts["full_name"]))
+courts = pl.read_csv(courts_file, infer_schema_length=0)
+court_id_to_name = dict(zip(courts["id"].to_list(), courts["full_name"].to_list()))
 
-print("Loading dockets (court_id only)...")
-dockets = pd.read_csv(dockets_file, usecols=["id", "court_id"], dtype=str).fillna("")
-docket_id_to_court_id = dict(zip(dockets["id"], dockets["court_id"]))
+print("Building info dict via lazy join chain (streaming)...")
+opinions_lazy = (
+    pl.scan_csv(
+        opinions_file,
+        columns=["id", "cluster_id"],
+        infer_schema_length=0,
+        ignore_errors=True,       # skip rows malformed by embedded HTML newlines
+    )
+    .filter(pl.col("id").str.contains(r"^\d+$"))  # guard: numeric IDs only
+)
 
-print("Loading opinion clusters...")
-clusters = pd.read_csv(
+clusters_lazy = pl.scan_csv(
     clusters_file,
-    usecols=["id", "date_filed", "case_name", "case_name_full", "docket_id"],
-    dtype=str,
-).fillna("")
-cluster_id_to_info = {}
-for _, row in clusters.iterrows():
-    court_id = docket_id_to_court_id.get(row["docket_id"], "")
-    court_name = court_id_to_name.get(court_id, court_id)
-    cluster_id_to_info[row["id"]] = {
+    columns=["id", "date_filed", "case_name", "case_name_full", "docket_id"],
+    infer_schema_length=0,
+    ignore_errors=True,
+).rename({"id": "cluster_id"})
+
+dockets_lazy = pl.scan_csv(
+    dockets_file,
+    columns=["id", "court_id"],
+    infer_schema_length=0,
+    ignore_errors=True,
+).rename({"id": "docket_id"})
+
+result = (
+    opinions_lazy
+    .join(clusters_lazy, on="cluster_id", how="inner")
+    .join(dockets_lazy, on="docket_id", how="left")
+    .collect(streaming=True)
+)
+
+result = result.with_columns(
+    pl.col("court_id")
+    .replace(court_id_to_name, default=pl.lit(""))
+    .alias("court")
+).fill_null("")
+
+info_dict = {
+    row["id"]: {
         "date": row["date_filed"],
-        "court": court_name,
+        "court": row["court"],
         "case_name": row["case_name"],
         "case_name_full": row["case_name_full"],
     }
-
-print("Loading opinions and building info dict...")
-info_dict = {}
-# opinions has large HTML/text fields with embedded newlines; use the python
-# engine and on_bad_lines='skip' for robustness, and only read needed columns.
-# Use the stdlib csv module (C-accelerated, streams row-by-row, handles
-# quoted multiline fields correctly) to avoid loading the full file into RAM.
-n_bad = 0
-with open(opinions_file, newline="", encoding="utf-8") as f:
-    reader = csv.reader(f)
-    header = next(reader)
-    id_idx = header.index("id")
-    cluster_idx = header.index("cluster_id")
-    for row in reader:
-        if len(row) <= max(id_idx, cluster_idx):
-            n_bad += 1
-            continue
-        opinion_id = row[id_idx].strip()
-        if not opinion_id.lstrip("-").isdigit():
-            n_bad += 1
-            continue
-        cluster_info = cluster_id_to_info.get(row[cluster_idx])
-        if cluster_info is not None:
-            info_dict[opinion_id] = cluster_info
-
-if n_bad:
-    print(f"  Warning: skipped {n_bad} malformed rows")
+    for row in result.to_dicts()
+}
 with open(out_info_dict, "w") as f:
     json.dump(info_dict, f)
 print(f"  {len(info_dict):,} opinions written")
@@ -123,15 +127,10 @@ print(f"  {len(info_dict):,} opinions written")
 # =============================================================================
 # 3. court_hierarchy.json
 #    [[supreme_name], [circuit_name, dist1_name, dist2_name, ...], ...]
-#
-#    - SCOTUS is the top level
-#    - Circuit courts of appeals are second level
-#    - District courts are grouped under their circuit using the canonical
-#      federal court system mapping (court_appeals_to only covers special courts)
 # =============================================================================
 print("Building court hierarchy...")
 
-courts_in_use = courts[courts["in_use"] == "t"]
+courts_in_use = courts.filter(pl.col("in_use") == "t")
 
 # Canonical district-court-id → circuit-court-id mapping.
 # Source: https://www.uscourts.gov/about-federal-courts/court-role-and-structure
@@ -186,20 +185,20 @@ DISTRICT_TO_CIRCUIT = {
 }
 
 scotus_id = "scotus"
-circuit_ids = [
-    r["id"]
-    for _, r in courts_in_use.iterrows()
-    if r["jurisdiction"] == "F" and r["id"] not in (scotus_id, "usjc")
-]
+circuit_ids = set(
+    courts_in_use
+    .filter(
+        (pl.col("jurisdiction") == "F") &
+        ~pl.col("id").is_in([scotus_id, "usjc"])
+    )["id"].to_list()
+)
 
-# Group districts under their circuit
 circuit_to_districts = defaultdict(list)
 for d_id, c_id in DISTRICT_TO_CIRCUIT.items():
     name = court_id_to_name.get(d_id)
-    if name and c_id in set(circuit_ids):
+    if name and c_id in circuit_ids:
         circuit_to_districts[c_id].append(name)
 
-# Build the hierarchy list
 scotus_name = court_id_to_name.get(scotus_id, "Supreme Court of the United States")
 hierarchy = [[scotus_name]]
 for c_id in sorted(circuit_ids):
