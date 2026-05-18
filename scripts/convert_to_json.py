@@ -94,25 +94,28 @@ print("Loading opinions and building info dict...")
 info_dict = {}
 # opinions has large HTML/text fields with embedded newlines; use the python
 # engine and on_bad_lines='skip' for robustness, and only read needed columns.
+# Use the stdlib csv module (C-accelerated, streams row-by-row, handles
+# quoted multiline fields correctly) to avoid loading the full file into RAM.
 n_bad = 0
-for chunk in pd.read_csv(
-    opinions_file,
-    usecols=["id", "cluster_id"],
-    dtype=str,
-    on_bad_lines="skip",
-    chunksize=100_000,
-):
-    chunk = chunk.fillna("")
-    for _, row in chunk.iterrows():
-        if not str(row["id"]).strip().lstrip("-").isdigit():
+with open(opinions_file, newline="", encoding="utf-8") as f:
+    reader = csv.reader(f)
+    header = next(reader)
+    id_idx = header.index("id")
+    cluster_idx = header.index("cluster_id")
+    for row in reader:
+        if len(row) <= max(id_idx, cluster_idx):
             n_bad += 1
             continue
-        cluster_info = cluster_id_to_info.get(row["cluster_id"])
+        opinion_id = row[id_idx].strip()
+        if not opinion_id.lstrip("-").isdigit():
+            n_bad += 1
+            continue
+        cluster_info = cluster_id_to_info.get(row[cluster_idx])
         if cluster_info is not None:
-            info_dict[row["id"]] = cluster_info
+            info_dict[opinion_id] = cluster_info
 
 if n_bad:
-    print(f"  Warning: skipped {n_bad} malformed opinion rows")
+    print(f"  Warning: skipped {n_bad} malformed rows")
 with open(out_info_dict, "w") as f:
     json.dump(info_dict, f)
 print(f"  {len(info_dict):,} opinions written")
