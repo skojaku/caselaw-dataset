@@ -98,8 +98,7 @@ opinions_df = pd.read_csv(
     opinions_file,
     usecols=["id", "cluster_id"],
     dtype=str,
-    engine="python",
-    on_bad_lines="skip",
+    on_bad_lines="skip",   # C engine (default): streams file, skips malformed rows
 ).fillna("")
 n_bad = 0
 for _, row in opinions_df.iterrows():
