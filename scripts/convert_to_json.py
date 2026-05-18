@@ -92,12 +92,15 @@ for _, row in clusters.iterrows():
 
 print("Loading opinions and building info dict...")
 info_dict = {}
-with open(opinions_file, newline="", encoding="utf-8") as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        cluster_info = cluster_id_to_info.get(row["cluster_id"])
-        if cluster_info is not None:
-            info_dict[row["id"]] = cluster_info
+# opinions has large HTML/text fields with embedded newlines; use pandas with
+# usecols to avoid csv.DictReader misaligning rows on those fields
+opinions_df = pd.read_csv(
+    opinions_file, usecols=["id", "cluster_id"], dtype=str
+).fillna("")
+for _, row in opinions_df.iterrows():
+    cluster_info = cluster_id_to_info.get(row["cluster_id"])
+    if cluster_info is not None:
+        info_dict[row["id"]] = cluster_info
 
 with open(out_info_dict, "w") as f:
     json.dump(info_dict, f)
