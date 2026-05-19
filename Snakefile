@@ -110,7 +110,7 @@ rule download_csv:
     output:
         j(RAW_DIR, "{filename}.csv"),
     params:
-        s3_path = lambda wc: f"{S3_BASE}/{wc.filename}.bz2",
+        s3_path = lambda wc: f"{S3_BASE}/{wc.filename}.csv.bz2",
     shell:
         "aws s3 cp '{params.s3_path}' - --no-sign-request | bzcat > '{output}'"
 

@@ -21,28 +21,62 @@ The pipeline produces two sets of outputs:
 
 In the **filtered** output, all IDs are re-mapped to contiguous ranges starting from 0.
 
-## Setup
+## Dataset statistics (2026-03-31 snapshot)
 
-### 1. Install dependencies
+| | Unfiltered | Filtered (LCC) |
+|-|-----------|----------------|
+| Opinions (nodes) | 8,156,126 | 7,957,415 |
+| Citations (edges) | — | 76,926,358 |
+| Fraction retained | — | 97.6% |
+
+## Requirements
+
+### Disk space
+
+The raw download is large. Make sure `raw_dir` has at least **400 GB** of free space:
+
+| File | Approximate size |
+|------|-----------------|
+| `opinions-*.csv` | ~324 GB |
+| `dockets-*.csv` | ~28 GB |
+| `opinion-clusters-*.csv` | ~12 GB |
+| `citation-map-*.csv` | ~2.6 GB |
+| `courts-*.csv` | ~1 MB |
+
+Processed outputs (JSON + final tables) add another ~50 GB.
+
+### Software
 
 ```bash
 pip install numpy scipy pandas polars networkx ujson tqdm snakemake
 pip install awscli   # for downloading from S3
 ```
 
-### 2. Configure paths
+Python 3.10+ recommended.
+
+## Setup
+
+### 1. Configure paths
 
 Edit `config.yaml`:
 
 ```yaml
-raw_dir: "/path/to/raw/caselaw"          # where to download CourtListener CSVs
-json_dir: "/path/to/raw/caselaw/json"    # where to write converted JSON files
+raw_dir: "/path/to/raw/caselaw"        # where to download CourtListener CSVs (~400 GB free space needed)
+json_dir: "/path/to/raw/caselaw/json"  # where to write converted JSON files
 output_dir: "/path/to/output/preprocessed"
 
-bulk_data_date: "2026-03-31"  # snapshot date (quarterly releases)
+bulk_data_date: "2026-03-31"           # snapshot date (see below)
 ```
 
-Available snapshot dates are listed at the [CourtListener bulk data page](https://wiki.free.law/c/courtlistener/help/api/bulk-data/bulk-legal-data).
+### 2. Choose a snapshot date
+
+CourtListener releases quarterly bulk snapshots. To list available dates:
+
+```bash
+aws s3 ls s3://com-courtlistener-storage/bulk-data/ --no-sign-request | grep "citation-map"
+```
+
+Set `bulk_data_date` in `config.yaml` to a date that appears in that listing (e.g. `2026-03-31`).
 
 ## Usage
 
@@ -50,7 +84,7 @@ Available snapshot dates are listed at the [CourtListener bulk data page](https:
 # Dry run
 snakemake -n
 
-# Run full pipeline
+# Run full pipeline (uses all available cores)
 snakemake --cores all
 
 # Download CSVs only
@@ -59,6 +93,8 @@ snakemake download
 # Convert CSVs to JSON only (after download)
 snakemake convert_to_json
 ```
+
+The `convert_to_json` step streams through all CSV files and takes roughly 1–2 hours depending on disk speed.
 
 ## Pipeline
 

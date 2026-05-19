@@ -15,9 +15,12 @@ Uses polars with lazy evaluation + streaming so large files (opinions.csv has
 full HTML text) are never fully loaded into RAM.
 """
 # %%
+import csv
 import json
 import sys
 from collections import defaultdict
+
+csv.field_size_limit(sys.maxsize)
 
 import polars as pl
 
@@ -70,56 +73,49 @@ print(f"  {len(citation_dict):,} cited opinions written")
 #      opinions  →(cluster_id)→  opinion_clusters  →(docket_id)→  dockets  →(court_id)→  courts
 # =============================================================================
 print("Loading courts...")
-courts = pl.read_csv(courts_file, infer_schema_length=0)
-court_id_to_name = dict(zip(courts["id"].to_list(), courts["full_name"].to_list()))
+courts_rows = []
+with open(courts_file, newline="", encoding="utf-8") as _f:
+    for row in csv.DictReader(_f):
+        courts_rows.append(row)
+court_id_to_name = {row["id"]: row["full_name"] for row in courts_rows}
 
-print("Building info dict via lazy join chain (streaming)...")
-opinions_lazy = (
-    pl.scan_csv(
-        opinions_file,
-        columns=["id", "cluster_id"],
-        infer_schema_length=0,
-        ignore_errors=True,       # skip rows malformed by embedded HTML newlines
-    )
-    .filter(pl.col("id").str.contains(r"^\d+$"))  # guard: numeric IDs only
-)
+print("Loading clusters...")
+cluster_info = {}  # cluster_id -> {date, case_name, case_name_full, docket_id}
+with open(clusters_file, newline="", encoding="utf-8") as _f:
+    for row in csv.DictReader(_f):
+        cluster_info[row["id"]] = {
+            "date": row.get("date_filed", ""),
+            "case_name": row.get("case_name", ""),
+            "case_name_full": row.get("case_name_full", ""),
+            "docket_id": row.get("docket_id", ""),
+        }
+print(f"  {len(cluster_info):,} clusters loaded")
 
-clusters_lazy = pl.scan_csv(
-    clusters_file,
-    columns=["id", "date_filed", "case_name", "case_name_full", "docket_id"],
-    infer_schema_length=0,
-    ignore_errors=True,
-).rename({"id": "cluster_id"})
+print("Loading dockets...")
+docket_court = {}  # docket_id -> court_id
+with open(dockets_file, newline="", encoding="utf-8") as _f:
+    for row in csv.DictReader(_f):
+        docket_court[row["id"]] = row.get("court_id", "")
+print(f"  {len(docket_court):,} dockets loaded")
 
-dockets_lazy = pl.scan_csv(
-    dockets_file,
-    columns=["id", "court_id"],
-    infer_schema_length=0,
-    ignore_errors=True,
-).rename({"id": "docket_id"})
-
-result = (
-    opinions_lazy
-    .join(clusters_lazy, on="cluster_id", how="inner")
-    .join(dockets_lazy, on="docket_id", how="left")
-    .collect(streaming=True)
-)
-
-result = result.with_columns(
-    pl.col("court_id")
-    .replace(court_id_to_name, default=pl.lit(""))
-    .alias("court")
-).fill_null("")
-
-info_dict = {
-    row["id"]: {
-        "date": row["date_filed"],
-        "court": row["court"],
-        "case_name": row["case_name"],
-        "case_name_full": row["case_name_full"],
-    }
-    for row in result.to_dicts()
-}
+print("Building info dict (streaming opinions)...")
+info_dict = {}
+with open(opinions_file, newline="", encoding="utf-8") as _f:
+    for row in csv.DictReader(_f):
+        op_id = row.get("id", "")
+        cl_id = row.get("cluster_id", "")
+        if not op_id.isdigit():
+            continue
+        c = cluster_info.get(cl_id)
+        if c is None:
+            continue
+        court = court_id_to_name.get(docket_court.get(c["docket_id"], ""), "")
+        info_dict[op_id] = {
+            "date": c["date"],
+            "court": court,
+            "case_name": c["case_name"],
+            "case_name_full": c["case_name_full"],
+        }
 with open(out_info_dict, "w") as f:
     json.dump(info_dict, f)
 print(f"  {len(info_dict):,} opinions written")
@@ -130,7 +126,7 @@ print(f"  {len(info_dict):,} opinions written")
 # =============================================================================
 print("Building court hierarchy...")
 
-courts_in_use = courts.filter(pl.col("in_use") == "t")
+courts_in_use = [row for row in courts_rows if row.get("in_use") == "t"]
 
 # Canonical district-court-id → circuit-court-id mapping.
 # Source: https://www.uscourts.gov/about-federal-courts/court-role-and-structure
@@ -186,11 +182,8 @@ DISTRICT_TO_CIRCUIT = {
 
 scotus_id = "scotus"
 circuit_ids = set(
-    courts_in_use
-    .filter(
-        (pl.col("jurisdiction") == "F") &
-        ~pl.col("id").is_in([scotus_id, "usjc"])
-    )["id"].to_list()
+    row["id"] for row in courts_in_use
+    if row.get("jurisdiction") == "F" and row["id"] not in {scotus_id, "usjc"}
 )
 
 circuit_to_districts = defaultdict(list)
